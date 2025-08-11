@@ -11,48 +11,55 @@ interface KeywordData {
 
 interface ProcessedKeyword extends KeywordData {
   estimatedCurrentTraffic: number;
-  trafficB13: number;
-  trafficB46: number;
-  trafficB710: number;
-  trafficB1120: number;
-  gainB13: number;
-  gainB46: number;
-  gainB710: number;
-  gainB1120: number;
+  trafficPosition3: number;
+  trafficPosition2: number;
+  trafficPosition1: number;
+  gainPosition3: number;
+  gainPosition2: number;
+  gainPosition1: number;
+  probStay: number;
+  probTo3: number;
+  probTo2: number;
+  probTo1: number;
   expectedTraffic: number;
-  gainExpected: number;
+  expectedGain: number;
 }
 
-type Bucket = 'B13' | 'B46' | 'B710' | 'B1120' | 'B21P';
-
-// Default CTR values per bucket (positions: 1-3,4-6,7-10,11-20,21+)
-const DEFAULT_BUCKET_CTR: Record<Bucket, number> = {
-  B13: (28.5 + 15.7 + 11.0) / 3, // average of positions 1-3
-  B46: (8.0 + 6.1 + 4.8) / 3,
-  B710: (3.8 + 3.0 + 2.5 + 2.1) / 4,
-  B1120:
-    (1.8 + 1.5 + 1.3 + 1.1 + 1.0 + 0.9 + 0.8 + 0.7 + 0.6 + 0.5) /
-    10,
-  B21P: 0.1
+// Default CTR values per position
+const DEFAULT_CTR_VALUES: { [key: number]: number } = {
+  1: 28.5,
+  2: 15.7,
+  3: 11.0,
+  4: 8.0,
+  5: 6.1,
+  6: 4.8,
+  7: 3.8,
+  8: 3.0,
+  9: 2.5,
+  10: 2.1,
+  11: 1.8,
+  12: 1.5,
+  13: 1.3,
+  14: 1.1,
+  15: 1.0,
+  16: 0.9,
+  17: 0.8,
+  18: 0.7,
+  19: 0.6,
+  20: 0.5
 };
 
-const BUCKET_LABELS: Record<Bucket, string> = {
-  B13: 'Pos 1-3',
-  B46: 'Pos 4-6',
-  B710: 'Pos 7-10',
-  B1120: 'Pos 11-20',
-  B21P: 'Pos 21+'
+// Baseline probabilities for ranking outcomes
+const BASE_IMPROVEMENT_PROBABILITIES = {
+  stay: 0.4,
+  toPos3: 0.3,
+  toPos2: 0.2,
+  toPos1: 0.1
 };
 
 function App() {
   const [keywords, setKeywords] = useState<KeywordData[]>([]);
-  const [bucketCtr, setBucketCtr] = useState<Record<Bucket, number>>(DEFAULT_BUCKET_CTR);
-  const [probMatrix, setProbMatrix] = useState({
-    p13: 5,
-    p46: 15,
-    p710: 30,
-    pstay: 20
-  });
+  const [ctrValues, setCtrValues] = useState<{ [key: number]: number }>(DEFAULT_CTR_VALUES);
   const [upliftCtr, setUpliftCtr] = useState<number>(0);
   const [minSearchVolume, setMinSearchVolume] = useState<number>(10);
   const [maxPosition, setMaxPosition] = useState<number>(50);
@@ -60,8 +67,10 @@ function App() {
   const [inputValues, setInputValues] = useState({
     minSearchVolume: '10',
     maxPosition: '50',
-    upliftCtr: '0'
+    upliftCtr: '0',
+    effort: '1'
   });
+  const [effort, setEffort] = useState<number>(1);
 
   const handleFileUpload = useCallback((file: File) => {
     const reader = new FileReader();
@@ -73,7 +82,7 @@ function App() {
         const worksheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(worksheet);
 
-        const parsedKeywords: KeywordData[] = (jsonData as Record<string, unknown>[]) .map(row => {
+        const parsedKeywords: KeywordData[] = (jsonData as Record<string, unknown>[]).map(row => {
           // Handle SEMrush and other common column naming conventions
           const keyword = (row.Keyword || row.keyword || row.KEYWORD || row.query || row.Query || row['Query'] || '') as string;
           const position = parseInt(
@@ -138,80 +147,68 @@ function App() {
     setIsDragActive(false);
   }, []);
 
-  const positionToBucket = useCallback((position: number): Bucket => {
-    if (position <= 3) return 'B13';
-    if (position <= 6) return 'B46';
-    if (position <= 10) return 'B710';
-    if (position <= 20) return 'B1120';
-    return 'B21P';
-  }, []);
-
-  const calculateBucketCTR = useCallback(
-    (bucket: Bucket): number => bucketCtr[bucket] * (1 + upliftCtr / 100),
-    [bucketCtr, upliftCtr]
-  );
+  const calculateCTR = useCallback((position: number, applyUplift = false): number => {
+    const baseCtr = ctrValues[position] || (position > 20 ? 0.1 : DEFAULT_CTR_VALUES[position] || 0.5);
+    const ctr = applyUplift ? baseCtr * (1 + upliftCtr / 100) : baseCtr;
+    return Math.min(100, ctr);
+  }, [ctrValues, upliftCtr]);
 
   const processedKeywords = useMemo((): ProcessedKeyword[] => {
-    const p1120 = Math.max(
-      0,
-      100 - probMatrix.p13 - probMatrix.p46 - probMatrix.p710 - probMatrix.pstay
-    );
-
     return keywords
       .filter(k => k.searchVolume >= minSearchVolume && k.position <= maxPosition)
       .map(keyword => {
-        const currentBucket = positionToBucket(keyword.position);
-        const currentCtr = calculateBucketCTR(currentBucket);
-        const estimatedCurrentTraffic =
-          keyword.currentTraffic || keyword.searchVolume * currentCtr / 100;
+        const currentCtr = calculateCTR(keyword.position, false);
+        const estimatedCurrentTraffic = keyword.currentTraffic || (keyword.searchVolume * currentCtr / 100);
 
-        const trafficB13 = keyword.searchVolume * calculateBucketCTR('B13') / 100;
-        const trafficB46 = keyword.searchVolume * calculateBucketCTR('B46') / 100;
-        const trafficB710 = keyword.searchVolume * calculateBucketCTR('B710') / 100;
-        const trafficB1120 = keyword.searchVolume * calculateBucketCTR('B1120') / 100;
+        const trafficPosition3 = keyword.searchVolume * calculateCTR(3, true) / 100;
+        const trafficPosition2 = keyword.searchVolume * calculateCTR(2, true) / 100;
+        const trafficPosition1 = keyword.searchVolume * calculateCTR(1, true) / 100;
 
-        const expectedCtr =
-          (probMatrix.p13 / 100) * calculateBucketCTR('B13') +
-          (probMatrix.p46 / 100) * calculateBucketCTR('B46') +
-          (probMatrix.p710 / 100) * calculateBucketCTR('B710') +
-          (p1120 / 100) * calculateBucketCTR('B1120') +
-          (probMatrix.pstay / 100) * currentCtr;
-        const expectedTraffic = keyword.searchVolume * expectedCtr / 100;
+        const effortScale = effort === 0 ? 0.85 : effort === 2 ? 1.15 : 1;
+        const scaled = {
+          toPos3: BASE_IMPROVEMENT_PROBABILITIES.toPos3 * effortScale,
+          toPos2: BASE_IMPROVEMENT_PROBABILITIES.toPos2 * effortScale,
+          toPos1: BASE_IMPROVEMENT_PROBABILITIES.toPos1 * effortScale,
+          stay: BASE_IMPROVEMENT_PROBABILITIES.stay
+        };
+        const totalProb = scaled.toPos3 + scaled.toPos2 + scaled.toPos1 + scaled.stay;
+        const probTo3 = scaled.toPos3 / totalProb;
+        const probTo2 = scaled.toPos2 / totalProb;
+        const probTo1 = scaled.toPos1 / totalProb;
+        const probStay = scaled.stay / totalProb;
+
+        const expectedTraffic =
+          probStay * estimatedCurrentTraffic +
+          probTo3 * trafficPosition3 +
+          probTo2 * trafficPosition2 +
+          probTo1 * trafficPosition1;
+        const expectedGain = expectedTraffic - estimatedCurrentTraffic;
 
         return {
           ...keyword,
           estimatedCurrentTraffic,
-          trafficB13,
-          trafficB46,
-          trafficB710,
-          trafficB1120,
-          gainB13: trafficB13 - estimatedCurrentTraffic,
-          gainB46: trafficB46 - estimatedCurrentTraffic,
-          gainB710: trafficB710 - estimatedCurrentTraffic,
-          gainB1120: trafficB1120 - estimatedCurrentTraffic,
+          trafficPosition3,
+          trafficPosition2,
+          trafficPosition1,
+          gainPosition3: trafficPosition3 - estimatedCurrentTraffic,
+          gainPosition2: trafficPosition2 - estimatedCurrentTraffic,
+          gainPosition1: trafficPosition1 - estimatedCurrentTraffic,
+          probStay,
+          probTo3,
+          probTo2,
+          probTo1,
           expectedTraffic,
-          gainExpected: expectedTraffic - estimatedCurrentTraffic
+          expectedGain
         };
       });
-  }, [
-    keywords,
-    minSearchVolume,
-    maxPosition,
-    positionToBucket,
-    calculateBucketCTR,
-    probMatrix
-  ]);
+  }, [keywords, minSearchVolume, maxPosition, calculateCTR, effort]);
 
   const summary = useMemo(() => {
-    const totalCurrentTraffic = processedKeywords.reduce(
-      (sum, k) => sum + k.estimatedCurrentTraffic,
-      0
-    );
-    const totalExpectedTraffic = processedKeywords.reduce(
-      (sum, k) => sum + k.expectedTraffic,
-      0
-    );
-    const totalGain = totalExpectedTraffic - totalCurrentTraffic;
+    const totalCurrentTraffic = processedKeywords.reduce((sum, k) => sum + k.estimatedCurrentTraffic, 0);
+    const totalGainPosition3 = processedKeywords.reduce((sum, k) => sum + Math.max(0, k.gainPosition3), 0);
+    const totalGainPosition1 = processedKeywords.reduce((sum, k) => sum + Math.max(0, k.gainPosition1), 0);
+    const totalExpectedTraffic = processedKeywords.reduce((sum, k) => sum + k.expectedTraffic, 0);
+    const totalExpectedGain = totalExpectedTraffic - totalCurrentTraffic;
 
     // Chart data for traffic potential
     const chartData = [
@@ -254,21 +251,23 @@ function App() {
 
     // Top opportunities (highest potential gain)
     const topOpportunities = processedKeywords
-      .filter(k => k.gainExpected > 0)
-      .sort((a, b) => b.gainExpected - a.gainExpected)
+      .filter(k => k.expectedGain > 0)
+      .sort((a, b) => b.expectedGain - a.expectedGain)
       .slice(0, 10)
       .map(k => ({
         keyword:
           k.keyword.length > 25 ? k.keyword.substring(0, 25) + '...' : k.keyword,
         current: Math.round(k.estimatedCurrentTraffic),
         potential: Math.round(k.expectedTraffic),
-        gain: Math.round(k.gainExpected)
+        gain: Math.round(k.expectedGain)
       }));
 
-    return {
-      totalCurrentTraffic,
+    return { 
+      totalCurrentTraffic, 
+      totalGainPosition3,
+      totalGainPosition1,
       totalExpectedTraffic,
-      totalGain,
+      totalExpectedGain,
       chartData,
       positionChartData,
       topOpportunities
@@ -276,15 +275,16 @@ function App() {
   }, [processedKeywords]);
 
   const handleReset = () => {
-    setBucketCtr(DEFAULT_BUCKET_CTR);
-    setProbMatrix({ p13: 5, p46: 15, p710: 30, pstay: 20 });
+    setCtrValues(DEFAULT_CTR_VALUES);
     setUpliftCtr(0);
     setMinSearchVolume(10);
     setMaxPosition(50);
+    setEffort(1);
     setInputValues({
       minSearchVolume: '10',
       maxPosition: '50',
-      upliftCtr: '0'
+      upliftCtr: '0',
+      effort: '1'
     });
   };
 
@@ -299,16 +299,14 @@ function App() {
       'Current Position': k.position,
       'Search Volume': k.searchVolume,
       'Current Traffic': Math.round(k.estimatedCurrentTraffic * 100) / 100,
-      'Traffic B13': Math.round(k.trafficB13 * 100) / 100,
-      'Traffic B46': Math.round(k.trafficB46 * 100) / 100,
-      'Traffic B710': Math.round(k.trafficB710 * 100) / 100,
-      'Traffic B1120': Math.round(k.trafficB1120 * 100) / 100,
-      'Gain B13': Math.round(k.gainB13 * 100) / 100,
-      'Gain B46': Math.round(k.gainB46 * 100) / 100,
-      'Gain B710': Math.round(k.gainB710 * 100) / 100,
-      'Gain B1120': Math.round(k.gainB1120 * 100) / 100,
+      'Traffic at Position 3': Math.round(k.trafficPosition3 * 100) / 100,
+      'Traffic at Position 2': Math.round(k.trafficPosition2 * 100) / 100,
+      'Traffic at Position 1': Math.round(k.trafficPosition1 * 100) / 100,
+      'Gain to Position 3': Math.round(k.gainPosition3 * 100) / 100,
+      'Gain to Position 2': Math.round(k.gainPosition2 * 100) / 100,
+      'Gain to Position 1': Math.round(k.gainPosition1 * 100) / 100,
       'Expected Traffic': Math.round(k.expectedTraffic * 100) / 100,
-      'Expected Gain': Math.round(k.gainExpected * 100) / 100
+      'Expected Gain': Math.round(k.expectedGain * 100) / 100
     }));
 
     const ws = XLSX.utils.json_to_sheet(exportData);
@@ -390,7 +388,7 @@ function App() {
                 </button>
               </div>
               
-              <div className="grid md:grid-cols-3 gap-6">
+              <div className="grid md:grid-cols-4 gap-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Minimum Search Volume
@@ -450,11 +448,12 @@ function App() {
                   </label>
                   <input
                     type="number"
+                    max="100"
                     value={inputValues.upliftCtr}
                     onChange={(e) => {
                       const value = e.target.value;
                       setInputValues(prev => ({ ...prev, upliftCtr: value }));
-                      const numValue = parseFloat(value);
+                      const numValue = Math.min(100, parseFloat(value));
                       if (!isNaN(numValue)) {
                         setUpliftCtr(numValue);
                       }
@@ -469,6 +468,30 @@ function App() {
                     className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
                   />
                 </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Effort Level
+                  </label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="2"
+                    step="1"
+                    value={effort}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setEffort(parseInt(val));
+                      setInputValues(prev => ({ ...prev, effort: val }));
+                    }}
+                    className="w-full"
+                  />
+                  <div className="flex justify-between text-xs text-gray-600 mt-1">
+                    <span>Low</span>
+                    <span>Medium</span>
+                    <span>High</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -476,68 +499,29 @@ function App() {
             <div className="bg-white rounded-lg shadow-md p-6">
               <h2 className="text-2xl font-semibold text-gray-900 mb-6 flex items-center">
                 <Target className="mr-2" size={24} />
-                CTR by Bucket (%)
+                CTR by Position (%)
               </h2>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                {(['B13', 'B46', 'B710', 'B1120', 'B21P'] as Bucket[]).map(bucket => (
-                  <div key={bucket} className="text-center">
+              <div className="grid grid-cols-4 md:grid-cols-10 gap-4">
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20].map(position => (
+                  <div key={position} className="text-center">
                     <label className="block text-xs font-medium text-gray-600 mb-1">
-                      {BUCKET_LABELS[bucket]}
+                      Pos {position}
                     </label>
                     <input
                       type="number"
                       step="0.1"
-                      value={bucketCtr[bucket]}
+                      value={ctrValues[position] || 0}
                       onChange={(e) => {
                         const newValue = parseFloat(e.target.value) || 0;
-                        setBucketCtr(prev => ({ ...prev, [bucket]: newValue }));
+                        setCtrValues(prev => ({ ...prev, [position]: newValue }));
                       }}
-                      className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
+                      className="w-full px-1 py-1 text-xs border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
                     />
                     <div className="text-xs text-gray-500 mt-1">
-                      {calculateBucketCTR(bucket).toFixed(1)}%
+                      {Math.min(100, (ctrValues[position] || 0) * (1 + upliftCtr / 100)).toFixed(1)}%
                     </div>
                   </div>
                 ))}
-              </div>
-            </div>
-
-            {/* Probability Matrix */}
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h2 className="text-2xl font-semibold text-gray-900 mb-6">Probability Matrix (%)</h2>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                {(['p13', 'p46', 'p710', 'pstay'] as const).map(key => (
-                  <div key={key} className="text-center">
-                    <label className="block text-xs font-medium text-gray-600 mb-1">
-                      {key.toUpperCase()}
-                    </label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={probMatrix[key]}
-                      onChange={e => {
-                        const newValue = parseFloat(e.target.value) || 0;
-                        setProbMatrix(prev => ({ ...prev, [key]: newValue }));
-                      }}
-                      className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
-                    />
-                  </div>
-                ))}
-                <div className="text-center">
-                  <label className="block text-xs font-medium text-gray-600 mb-1">p1120</label>
-                  <div className="px-2 py-1 text-xs border border-gray-200 rounded bg-gray-50">
-                    {(
-                      Math.max(
-                        0,
-                        100 -
-                          probMatrix.p13 -
-                          probMatrix.p46 -
-                          probMatrix.p710 -
-                          probMatrix.pstay
-                      ) || 0
-                    ).toFixed(1)}
-                  </div>
-                </div>
               </div>
             </div>
 
@@ -558,7 +542,7 @@ function App() {
               </div>
 
               {/* Summary Cards */}
-              <div className="grid md:grid-cols-3 gap-6 mb-8">
+              <div className="grid md:grid-cols-4 gap-6 mb-8">
                 <div className="bg-blue-50 rounded-lg p-6 border border-blue-200">
                   <h3 className="text-lg font-semibold text-blue-900 mb-2">Current Traffic</h3>
                   <p className="text-3xl font-bold text-blue-700">
@@ -576,11 +560,19 @@ function App() {
                 </div>
 
                 <div className="bg-purple-50 rounded-lg p-6 border border-purple-200">
-                  <h3 className="text-lg font-semibold text-purple-900 mb-2">Total Gain</h3>
+                  <h3 className="text-lg font-semibold text-purple-900 mb-2">Gain to Position 3</h3>
                   <p className="text-3xl font-bold text-purple-700">
-                    {Math.round(summary.totalGain).toLocaleString()}
+                    +{Math.round(summary.totalGainPosition3).toLocaleString()}
                   </p>
                   <p className="text-sm text-purple-600 mt-1">Additional monthly visits</p>
+                </div>
+
+                <div className="bg-yellow-50 rounded-lg p-6 border border-yellow-200">
+                  <h3 className="text-lg font-semibold text-yellow-900 mb-2">Expected Gain</h3>
+                  <p className="text-3xl font-bold text-yellow-700">
+                    +{Math.round(summary.totalExpectedGain).toLocaleString()}
+                  </p>
+                  <p className="text-sm text-yellow-600 mt-1">Weighted by effort</p>
                 </div>
               </div>
 
@@ -605,28 +597,22 @@ function App() {
                         Current Traffic
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Traffic B13
+                        Traffic at Pos 3
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Gain B13
+                        Gain to Pos 3
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Traffic B46
+                        Traffic at Pos 2
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Gain B46
+                        Gain to Pos 2
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Traffic B710
+                        Traffic at Pos 1
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Gain B710
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Traffic B1120
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Gain B1120
+                        Gain to Pos 1
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Expected Traffic
@@ -652,43 +638,35 @@ function App() {
                           {Math.round(keyword.estimatedCurrentTraffic)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
-                          {Math.round(keyword.trafficB13)}
+                          {Math.round(keyword.trafficPosition3)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          <span className={`font-medium ${keyword.gainB13 > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                            {keyword.gainB13 > 0 ? '+' : ''}{Math.round(keyword.gainB13)}
+                          <span className={`font-medium ${keyword.gainPosition3 > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {keyword.gainPosition3 > 0 ? '+' : ''}{Math.round(keyword.gainPosition3)}
                           </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
-                          {Math.round(keyword.trafficB46)}
+                          {Math.round(keyword.trafficPosition2)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          <span className={`font-medium ${keyword.gainB46 > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                            {keyword.gainB46 > 0 ? '+' : ''}{Math.round(keyword.gainB46)}
+                          <span className={`font-medium ${keyword.gainPosition2 > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {keyword.gainPosition2 > 0 ? '+' : ''}{Math.round(keyword.gainPosition2)}
                           </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
-                          {Math.round(keyword.trafficB710)}
+                          {Math.round(keyword.trafficPosition1)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          <span className={`font-medium ${keyword.gainB710 > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                            {keyword.gainB710 > 0 ? '+' : ''}{Math.round(keyword.gainB710)}
+                          <span className={`font-medium ${keyword.gainPosition1 > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {keyword.gainPosition1 > 0 ? '+' : ''}{Math.round(keyword.gainPosition1)}
                           </span>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
-                          {Math.round(keyword.trafficB1120)}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          <span className={`font-medium ${keyword.gainB1120 > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                            {keyword.gainB1120 > 0 ? '+' : ''}{Math.round(keyword.gainB1120)}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-purple-600">
                           {Math.round(keyword.expectedTraffic)}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm">
-                          <span className={`font-medium ${keyword.gainExpected > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                            {keyword.gainExpected > 0 ? '+' : ''}{Math.round(keyword.gainExpected)}
+                          <span className={`font-medium ${keyword.expectedGain > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {keyword.expectedGain > 0 ? '+' : ''}{Math.round(keyword.expectedGain)}
                           </span>
                         </td>
                       </tr>
