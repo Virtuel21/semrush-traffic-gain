@@ -25,12 +25,28 @@ interface ProcessedKeyword extends KeywordData {
   expectedGain: number;
 }
 
-// Industry standard CTR values by position
+// Default CTR values per position
 const DEFAULT_CTR_VALUES: { [key: number]: number } = {
-  1: 28.5, 2: 15.7, 3: 11.0, 4: 8.0, 5: 6.1,
-  6: 4.8, 7: 3.8, 8: 3.0, 9: 2.5, 10: 2.1,
-  11: 1.8, 12: 1.5, 13: 1.3, 14: 1.1, 15: 1.0,
-  16: 0.9, 17: 0.8, 18: 0.7, 19: 0.6, 20: 0.5
+  1: 28.5,
+  2: 15.7,
+  3: 11.0,
+  4: 8.0,
+  5: 6.1,
+  6: 4.8,
+  7: 3.8,
+  8: 3.0,
+  9: 2.5,
+  10: 2.1,
+  11: 1.8,
+  12: 1.5,
+  13: 1.3,
+  14: 1.1,
+  15: 1.0,
+  16: 0.9,
+  17: 0.8,
+  18: 0.7,
+  19: 0.6,
+  20: 0.5
 };
 
 // Baseline probabilities for ranking outcomes
@@ -66,31 +82,34 @@ function App() {
         const worksheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(worksheet);
 
-        const parsedKeywords: KeywordData[] = jsonData.map((row: any) => {
+        const parsedKeywords: KeywordData[] = (jsonData as Record<string, unknown>[]).map(row => {
           // Handle SEMrush and other common column naming conventions
-          const keyword = row.Keyword || row.keyword || row.KEYWORD || row.query || row.Query || row['Query'] || '';
-          const position = parseInt(row.Position || row.position || row.POSITION || row.rank || row.Rank || row['Avg. Position'] || '0');
-          const searchVolume = parseInt(
-            row['Search Volume'] || 
-            row['search volume'] || 
-            row.Volume || 
-            row.volume || 
-            row['search_volume'] || 
-            row['Monthly Search Volume'] ||
-            row['Avg. Monthly Searches'] ||
-            '0'
+          const keyword = (row.Keyword || row.keyword || row.KEYWORD || row.query || row.Query || row['Query'] || '') as string;
+          const position = parseInt(
+            (row.Position || row.position || row.POSITION || row.rank || row.Rank || row['Avg. Position'] || '0') as string
           );
-          const currentTraffic = parseFloat(
-            row.Traffic || 
-            row.traffic || 
-            row.TRAFFIC || 
-            row['Current Traffic'] ||
-            row['current traffic'] ||
-            row['Est. Traffic'] ||
-            row['Estimated Traffic'] ||
-            row['Monthly Traffic'] ||
-            '0'
-          ) || undefined;
+          const searchVolume = parseInt(
+            (row['Search Volume'] ||
+              row['search volume'] ||
+              row.Volume ||
+              row.volume ||
+              row['search_volume'] ||
+              row['Monthly Search Volume'] ||
+              row['Avg. Monthly Searches'] ||
+              '0') as string
+          );
+          const currentTraffic =
+            parseFloat(
+              (row.Traffic ||
+                row.traffic ||
+                row.TRAFFIC ||
+                row['Current Traffic'] ||
+                row['current traffic'] ||
+                row['Est. Traffic'] ||
+                row['Estimated Traffic'] ||
+                row['Monthly Traffic'] ||
+                '0') as string
+            ) || undefined;
 
           return {
             keyword: String(keyword),
@@ -199,14 +218,9 @@ function App() {
         fill: '#3B82F6'
       },
       {
-        name: 'Position 3',
-        traffic: Math.round(totalCurrentTraffic + totalGainPosition3),
+        name: 'Expected',
+        traffic: Math.round(totalExpectedTraffic),
         fill: '#10B981'
-      },
-      {
-        name: 'Position 1',
-        traffic: Math.round(totalCurrentTraffic + totalGainPosition1),
-        fill: '#8B5CF6'
       }
     ];
 
@@ -220,24 +234,32 @@ function App() {
       return acc;
     }, {} as { [key: string]: number });
 
-    const positionChartData = Object.entries(positionDistribution).map(([range, count]) => ({
-      name: `Position ${range}`,
-      value: count,
-      fill: range === '1-3' ? '#10B981' :
-            range === '4-10' ? '#F59E0B' :
-            range === '11-20' ? '#EF4444' : '#6B7280'
-    }));
+    const positionChartData = Object.entries(positionDistribution).map(
+      ([range, count]) => ({
+        name: `Position ${range}`,
+        value: count,
+        fill:
+          range === '1-3'
+            ? '#10B981'
+            : range === '4-10'
+            ? '#F59E0B'
+            : range === '11-20'
+            ? '#EF4444'
+            : '#6B7280'
+      })
+    );
 
     // Top opportunities (highest potential gain)
     const topOpportunities = processedKeywords
-      .filter(k => k.gainPosition1 > 0)
-      .sort((a, b) => b.gainPosition1 - a.gainPosition1)
+      .filter(k => k.expectedGain > 0)
+      .sort((a, b) => b.expectedGain - a.expectedGain)
       .slice(0, 10)
       .map(k => ({
-        keyword: k.keyword.length > 25 ? k.keyword.substring(0, 25) + '...' : k.keyword,
+        keyword:
+          k.keyword.length > 25 ? k.keyword.substring(0, 25) + '...' : k.keyword,
         current: Math.round(k.estimatedCurrentTraffic),
-        potential: Math.round(k.trafficPosition1),
-        gain: Math.round(k.gainPosition1)
+        potential: Math.round(k.expectedTraffic),
+        gain: Math.round(k.expectedGain)
       }));
 
     return { 
@@ -273,7 +295,7 @@ function App() {
     }
 
     const exportData = processedKeywords.map(k => ({
-      'Keyword': k.keyword,
+      Keyword: k.keyword,
       'Current Position': k.position,
       'Search Volume': k.searchVolume,
       'Current Traffic': Math.round(k.estimatedCurrentTraffic * 100) / 100,
@@ -479,8 +501,8 @@ function App() {
                 <Target className="mr-2" size={24} />
                 CTR by Position (%)
               </h2>
-              <div className="grid grid-cols-4 md:grid-cols-5 lg:grid-cols-10 gap-4">
-                {Array.from({ length: 20 }, (_, i) => i + 1).map(position => (
+              <div className="grid grid-cols-4 md:grid-cols-10 gap-4">
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20].map(position => (
                   <div key={position} className="text-center">
                     <label className="block text-xs font-medium text-gray-600 mb-1">
                       Pos {position}
@@ -493,7 +515,7 @@ function App() {
                         const newValue = parseFloat(e.target.value) || 0;
                         setCtrValues(prev => ({ ...prev, [position]: newValue }));
                       }}
-                      className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
+                      className="w-full px-1 py-1 text-xs border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
                     />
                     <div className="text-xs text-gray-500 mt-1">
                       {Math.min(100, (ctrValues[position] || 0) * (1 + upliftCtr / 100)).toFixed(1)}%
@@ -528,19 +550,19 @@ function App() {
                   </p>
                   <p className="text-sm text-blue-600 mt-1">Monthly visits</p>
                 </div>
-                
+
                 <div className="bg-green-50 rounded-lg p-6 border border-green-200">
-                  <h3 className="text-lg font-semibold text-green-900 mb-2">Gain to Position 3</h3>
+                  <h3 className="text-lg font-semibold text-green-900 mb-2">Expected Traffic</h3>
                   <p className="text-3xl font-bold text-green-700">
-                    +{Math.round(summary.totalGainPosition3).toLocaleString()}
+                    {Math.round(summary.totalExpectedTraffic).toLocaleString()}
                   </p>
-                  <p className="text-sm text-green-600 mt-1">Additional monthly visits</p>
+                  <p className="text-sm text-green-600 mt-1">Monthly visits</p>
                 </div>
-                
+
                 <div className="bg-purple-50 rounded-lg p-6 border border-purple-200">
-                  <h3 className="text-lg font-semibold text-purple-900 mb-2">Gain to Position 1</h3>
+                  <h3 className="text-lg font-semibold text-purple-900 mb-2">Gain to Position 3</h3>
                   <p className="text-3xl font-bold text-purple-700">
-                    +{Math.round(summary.totalGainPosition1).toLocaleString()}
+                    +{Math.round(summary.totalGainPosition3).toLocaleString()}
                   </p>
                   <p className="text-sm text-purple-600 mt-1">Additional monthly visits</p>
                 </div>
@@ -578,7 +600,13 @@ function App() {
                         Traffic at Pos 3
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Gain to Pos 3
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Traffic at Pos 2
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Gain to Pos 2
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Traffic at Pos 1
@@ -612,8 +640,18 @@ function App() {
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
                           {Math.round(keyword.trafficPosition3)}
                         </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          <span className={`font-medium ${keyword.gainPosition3 > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {keyword.gainPosition3 > 0 ? '+' : ''}{Math.round(keyword.gainPosition3)}
+                          </span>
+                        </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
                           {Math.round(keyword.trafficPosition2)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          <span className={`font-medium ${keyword.gainPosition2 > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {keyword.gainPosition2 > 0 ? '+' : ''}{Math.round(keyword.gainPosition2)}
+                          </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-blue-600">
                           {Math.round(keyword.trafficPosition1)}
