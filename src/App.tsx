@@ -1,12 +1,14 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { Upload, Download, RotateCcw, TrendingUp, Search, Target } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import Papa from 'papaparse';
 
 interface KeywordData {
   keyword: string;
   position: number;
   searchVolume: number;
   currentTraffic?: number;
+  url?: string;
 }
 
 interface ProcessedKeyword extends KeywordData {
@@ -34,6 +36,16 @@ function App() {
   const [minSearchVolume, setMinSearchVolume] = useState<number>(10);
   const [maxPosition, setMaxPosition] = useState<number>(50);
   const [isDragActive, setIsDragActive] = useState<boolean>(false);
+  const [rawData, setRawData] = useState<Record<string, unknown>[]>([]);
+  const [availableColumns, setAvailableColumns] = useState<string[]>([]);
+  const [showColumnMapper, setShowColumnMapper] = useState<boolean>(false);
+  const [columnMapping, setColumnMapping] = useState<{
+    keyword: string;
+    position: string;
+    volume: string;
+    url?: string;
+    currentTraffic?: string;
+  }>({ keyword: '', position: '', volume: '', url: '', currentTraffic: '' });
   const [inputValues, setInputValues] = useState({
     minSearchVolume: '10',
     maxPosition: '50',
@@ -41,57 +53,87 @@ function App() {
   });
 
   const handleFileUpload = useCallback((file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = new Uint8Array(e.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array' });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet);
-
-        const parsedKeywords: KeywordData[] = jsonData.map((row: any) => {
-          // Handle SEMrush and other common column naming conventions
-          const keyword = row.Keyword || row.keyword || row.KEYWORD || row.query || row.Query || row['Query'] || '';
-          const position = parseInt(row.Position || row.position || row.POSITION || row.rank || row.Rank || row['Avg. Position'] || '0');
-          const searchVolume = parseInt(
-            row['Search Volume'] || 
-            row['search volume'] || 
-            row.Volume || 
-            row.volume || 
-            row['search_volume'] || 
-            row['Monthly Search Volume'] ||
-            row['Avg. Monthly Searches'] ||
-            '0'
-          );
-          const currentTraffic = parseFloat(
-            row.Traffic || 
-            row.traffic || 
-            row.TRAFFIC || 
-            row['Current Traffic'] ||
-            row['current traffic'] ||
-            row['Est. Traffic'] ||
-            row['Estimated Traffic'] ||
-            row['Monthly Traffic'] ||
-            '0'
-          ) || undefined;
-
-          return {
-            keyword: String(keyword),
-            position: isNaN(position) ? 0 : position,
-            searchVolume: isNaN(searchVolume) ? 0 : searchVolume,
-            currentTraffic
-          };
-        }).filter(k => k.keyword && k.position > 0 && k.searchVolume > 0);
-
-        setKeywords(parsedKeywords);
-      } catch (error) {
-        console.error('File parsing error:', error);
-        alert('Error parsing file. Please ensure it\'s a valid SEMrush export file (XLSX or CSV) with keyword data including columns for Keyword, Position, and Search Volume.');
-      }
-    };
-    reader.readAsArrayBuffer(file);
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (ext === 'csv') {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => {
+            const data = results.data as Record<string, unknown>[];
+          const cols = results.meta.fields || Object.keys(data[0] || {});
+          setRawData(data);
+          setAvailableColumns(cols);
+          setShowColumnMapper(true);
+        },
+        error: (error) => {
+          console.error('CSV parsing error:', error);
+          alert('Error parsing CSV file.');
+        }
+      });
+    } else if (ext === 'xlsx' || ext === 'xls') {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          const jsonData = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: '' });
+          const cols = Object.keys(jsonData[0] || {});
+          setRawData(jsonData);
+          setAvailableColumns(cols);
+          setShowColumnMapper(true);
+        } catch (error) {
+          console.error('File parsing error:', error);
+          alert('Error parsing XLSX file.');
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      alert('Unsupported file type. Please upload a CSV or XLSX file.');
+    }
   }, []);
+
+  const handleMappingSubmit = useCallback(() => {
+    if (!columnMapping.keyword || !columnMapping.position || !columnMapping.volume) {
+      alert('Please map Keyword, Position, and Volume columns.');
+      return;
+    }
+
+    const parseNumber = (val: unknown): number => {
+      const num = parseFloat(String(val).replace(/[^0-9.-]+/g, ''));
+      return isNaN(num) ? NaN : num;
+    };
+
+    const processed: KeywordData[] = rawData.map((row) => {
+      const keyword = String(row[columnMapping.keyword] ?? '').trim();
+      const position = parseNumber(row[columnMapping.position]);
+      const searchVolume = parseNumber(row[columnMapping.volume]);
+      const url = columnMapping.url ? String(row[columnMapping.url] ?? '').trim() : undefined;
+      const currentTraffic = columnMapping.currentTraffic ? parseNumber(row[columnMapping.currentTraffic]) : undefined;
+
+      return {
+        keyword,
+        position: Math.min(Math.max(position, 1), 100),
+        searchVolume,
+        currentTraffic,
+        url
+      };
+    }).filter(r => r.keyword && !isNaN(r.position) && !isNaN(r.searchVolume) && r.searchVolume > 0);
+
+    const deduped = new Map<string, KeywordData>();
+    for (const row of processed) {
+      if (row.searchVolume < 0) continue;
+      const key = row.keyword.toLowerCase() + (row.url ? `|${row.url.toLowerCase()}` : '');
+      const existing = deduped.get(key);
+      if (!existing || row.position < existing.position) {
+        deduped.set(key, row);
+      }
+    }
+
+    setKeywords(Array.from(deduped.values()));
+    setShowColumnMapper(false);
+  }, [columnMapping, rawData]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -290,7 +332,86 @@ function App() {
               Choose File
             </label>
           </div>
-          {keywords.length > 0 && (
+          {showColumnMapper && (
+            <div className="mt-6">
+              <h3 className="text-lg font-medium text-gray-900 mb-4">Map Columns</h3>
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Keyword *</label>
+                  <select
+                    value={columnMapping.keyword}
+                    onChange={(e) => setColumnMapping({ ...columnMapping, keyword: e.target.value })}
+                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">Select column</option>
+                    {availableColumns.map(col => (
+                      <option key={col} value={col}>{col}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Position *</label>
+                  <select
+                    value={columnMapping.position}
+                    onChange={(e) => setColumnMapping({ ...columnMapping, position: e.target.value })}
+                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">Select column</option>
+                    {availableColumns.map(col => (
+                      <option key={col} value={col}>{col}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Search Volume *</label>
+                  <select
+                    value={columnMapping.volume}
+                    onChange={(e) => setColumnMapping({ ...columnMapping, volume: e.target.value })}
+                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">Select column</option>
+                    {availableColumns.map(col => (
+                      <option key={col} value={col}>{col}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">URL</label>
+                  <select
+                    value={columnMapping.url}
+                    onChange={(e) => setColumnMapping({ ...columnMapping, url: e.target.value })}
+                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">(none)</option>
+                    {availableColumns.map(col => (
+                      <option key={col} value={col}>{col}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Current Traffic</label>
+                  <select
+                    value={columnMapping.currentTraffic}
+                    onChange={(e) => setColumnMapping({ ...columnMapping, currentTraffic: e.target.value })}
+                    className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">(none)</option>
+                    {availableColumns.map(col => (
+                      <option key={col} value={col}>{col}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <button
+                onClick={handleMappingSubmit}
+                disabled={!columnMapping.keyword || !columnMapping.position || !columnMapping.volume}
+                className="mt-4 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400"
+              >
+                Process Data
+              </button>
+            </div>
+          )}
+          {!showColumnMapper && keywords.length > 0 && (
             <p className="mt-4 text-green-600 font-medium">
               ✓ Successfully loaded {keywords.length} keywords from SEMrush export
             </p>
