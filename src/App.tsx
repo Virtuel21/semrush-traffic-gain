@@ -17,6 +17,12 @@ interface ProcessedKeyword extends KeywordData {
   gainPosition3: number;
   gainPosition2: number;
   gainPosition1: number;
+  probStay: number;
+  probTo3: number;
+  probTo2: number;
+  probTo1: number;
+  expectedTraffic: number;
+  expectedGain: number;
 }
 
 // Industry standard CTR values by position
@@ -25,6 +31,14 @@ const DEFAULT_CTR_VALUES: { [key: number]: number } = {
   6: 4.8, 7: 3.8, 8: 3.0, 9: 2.5, 10: 2.1,
   11: 1.8, 12: 1.5, 13: 1.3, 14: 1.1, 15: 1.0,
   16: 0.9, 17: 0.8, 18: 0.7, 19: 0.6, 20: 0.5
+};
+
+// Baseline probabilities for ranking outcomes
+const BASE_IMPROVEMENT_PROBABILITIES = {
+  stay: 0.4,
+  toPos3: 0.3,
+  toPos2: 0.2,
+  toPos1: 0.1
 };
 
 function App() {
@@ -37,8 +51,10 @@ function App() {
   const [inputValues, setInputValues] = useState({
     minSearchVolume: '10',
     maxPosition: '50',
-    upliftCtr: '0'
+    upliftCtr: '0',
+    effort: '1'
   });
+  const [effort, setEffort] = useState<number>(1);
 
   const handleFileUpload = useCallback((file: File) => {
     const reader = new FileReader();
@@ -112,21 +128,42 @@ function App() {
     setIsDragActive(false);
   }, []);
 
-  const calculateCTR = useCallback((position: number): number => {
+  const calculateCTR = useCallback((position: number, applyUplift = false): number => {
     const baseCtr = ctrValues[position] || (position > 20 ? 0.1 : DEFAULT_CTR_VALUES[position] || 0.5);
-    return baseCtr * (1 + upliftCtr / 100);
+    const ctr = applyUplift ? baseCtr * (1 + upliftCtr / 100) : baseCtr;
+    return Math.min(100, ctr);
   }, [ctrValues, upliftCtr]);
 
   const processedKeywords = useMemo((): ProcessedKeyword[] => {
     return keywords
       .filter(k => k.searchVolume >= minSearchVolume && k.position <= maxPosition)
       .map(keyword => {
-        const currentCtr = calculateCTR(keyword.position);
+        const currentCtr = calculateCTR(keyword.position, false);
         const estimatedCurrentTraffic = keyword.currentTraffic || (keyword.searchVolume * currentCtr / 100);
-        
-        const trafficPosition3 = keyword.searchVolume * calculateCTR(3) / 100;
-        const trafficPosition2 = keyword.searchVolume * calculateCTR(2) / 100;
-        const trafficPosition1 = keyword.searchVolume * calculateCTR(1) / 100;
+
+        const trafficPosition3 = keyword.searchVolume * calculateCTR(3, true) / 100;
+        const trafficPosition2 = keyword.searchVolume * calculateCTR(2, true) / 100;
+        const trafficPosition1 = keyword.searchVolume * calculateCTR(1, true) / 100;
+
+        const effortScale = effort === 0 ? 0.85 : effort === 2 ? 1.15 : 1;
+        const scaled = {
+          toPos3: BASE_IMPROVEMENT_PROBABILITIES.toPos3 * effortScale,
+          toPos2: BASE_IMPROVEMENT_PROBABILITIES.toPos2 * effortScale,
+          toPos1: BASE_IMPROVEMENT_PROBABILITIES.toPos1 * effortScale,
+          stay: BASE_IMPROVEMENT_PROBABILITIES.stay
+        };
+        const totalProb = scaled.toPos3 + scaled.toPos2 + scaled.toPos1 + scaled.stay;
+        const probTo3 = scaled.toPos3 / totalProb;
+        const probTo2 = scaled.toPos2 / totalProb;
+        const probTo1 = scaled.toPos1 / totalProb;
+        const probStay = scaled.stay / totalProb;
+
+        const expectedTraffic =
+          probStay * estimatedCurrentTraffic +
+          probTo3 * trafficPosition3 +
+          probTo2 * trafficPosition2 +
+          probTo1 * trafficPosition1;
+        const expectedGain = expectedTraffic - estimatedCurrentTraffic;
 
         return {
           ...keyword,
@@ -136,15 +173,23 @@ function App() {
           trafficPosition1,
           gainPosition3: trafficPosition3 - estimatedCurrentTraffic,
           gainPosition2: trafficPosition2 - estimatedCurrentTraffic,
-          gainPosition1: trafficPosition1 - estimatedCurrentTraffic
+          gainPosition1: trafficPosition1 - estimatedCurrentTraffic,
+          probStay,
+          probTo3,
+          probTo2,
+          probTo1,
+          expectedTraffic,
+          expectedGain
         };
       });
-  }, [keywords, minSearchVolume, maxPosition, calculateCTR]);
+  }, [keywords, minSearchVolume, maxPosition, calculateCTR, effort]);
 
   const summary = useMemo(() => {
     const totalCurrentTraffic = processedKeywords.reduce((sum, k) => sum + k.estimatedCurrentTraffic, 0);
     const totalGainPosition3 = processedKeywords.reduce((sum, k) => sum + Math.max(0, k.gainPosition3), 0);
     const totalGainPosition1 = processedKeywords.reduce((sum, k) => sum + Math.max(0, k.gainPosition1), 0);
+    const totalExpectedTraffic = processedKeywords.reduce((sum, k) => sum + k.expectedTraffic, 0);
+    const totalExpectedGain = totalExpectedTraffic - totalCurrentTraffic;
 
     // Chart data for traffic potential
     const chartData = [
@@ -197,8 +242,10 @@ function App() {
 
     return { 
       totalCurrentTraffic, 
-      totalGainPosition3, 
+      totalGainPosition3,
       totalGainPosition1,
+      totalExpectedTraffic,
+      totalExpectedGain,
       chartData,
       positionChartData,
       topOpportunities
@@ -210,10 +257,12 @@ function App() {
     setUpliftCtr(0);
     setMinSearchVolume(10);
     setMaxPosition(50);
+    setEffort(1);
     setInputValues({
       minSearchVolume: '10',
       maxPosition: '50',
-      upliftCtr: '0'
+      upliftCtr: '0',
+      effort: '1'
     });
   };
 
@@ -233,7 +282,9 @@ function App() {
       'Traffic at Position 1': Math.round(k.trafficPosition1 * 100) / 100,
       'Gain to Position 3': Math.round(k.gainPosition3 * 100) / 100,
       'Gain to Position 2': Math.round(k.gainPosition2 * 100) / 100,
-      'Gain to Position 1': Math.round(k.gainPosition1 * 100) / 100
+      'Gain to Position 1': Math.round(k.gainPosition1 * 100) / 100,
+      'Expected Traffic': Math.round(k.expectedTraffic * 100) / 100,
+      'Expected Gain': Math.round(k.expectedGain * 100) / 100
     }));
 
     const ws = XLSX.utils.json_to_sheet(exportData);
@@ -315,7 +366,7 @@ function App() {
                 </button>
               </div>
               
-              <div className="grid md:grid-cols-3 gap-6">
+              <div className="grid md:grid-cols-4 gap-6">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Minimum Search Volume
@@ -375,11 +426,12 @@ function App() {
                   </label>
                   <input
                     type="number"
+                    max="100"
                     value={inputValues.upliftCtr}
                     onChange={(e) => {
                       const value = e.target.value;
                       setInputValues(prev => ({ ...prev, upliftCtr: value }));
-                      const numValue = parseFloat(value);
+                      const numValue = Math.min(100, parseFloat(value));
                       if (!isNaN(numValue)) {
                         setUpliftCtr(numValue);
                       }
@@ -393,6 +445,30 @@ function App() {
                     }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Effort Level
+                  </label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="2"
+                    step="1"
+                    value={effort}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setEffort(parseInt(val));
+                      setInputValues(prev => ({ ...prev, effort: val }));
+                    }}
+                    className="w-full"
+                  />
+                  <div className="flex justify-between text-xs text-gray-600 mt-1">
+                    <span>Low</span>
+                    <span>Medium</span>
+                    <span>High</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -420,7 +496,7 @@ function App() {
                       className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
                     />
                     <div className="text-xs text-gray-500 mt-1">
-                      {((ctrValues[position] || 0) * (1 + upliftCtr / 100)).toFixed(1)}%
+                      {Math.min(100, (ctrValues[position] || 0) * (1 + upliftCtr / 100)).toFixed(1)}%
                     </div>
                   </div>
                 ))}
@@ -444,7 +520,7 @@ function App() {
               </div>
 
               {/* Summary Cards */}
-              <div className="grid md:grid-cols-3 gap-6 mb-8">
+              <div className="grid md:grid-cols-4 gap-6 mb-8">
                 <div className="bg-blue-50 rounded-lg p-6 border border-blue-200">
                   <h3 className="text-lg font-semibold text-blue-900 mb-2">Current Traffic</h3>
                   <p className="text-3xl font-bold text-blue-700">
@@ -467,6 +543,14 @@ function App() {
                     +{Math.round(summary.totalGainPosition1).toLocaleString()}
                   </p>
                   <p className="text-sm text-purple-600 mt-1">Additional monthly visits</p>
+                </div>
+
+                <div className="bg-yellow-50 rounded-lg p-6 border border-yellow-200">
+                  <h3 className="text-lg font-semibold text-yellow-900 mb-2">Expected Gain</h3>
+                  <p className="text-3xl font-bold text-yellow-700">
+                    +{Math.round(summary.totalExpectedGain).toLocaleString()}
+                  </p>
+                  <p className="text-sm text-yellow-600 mt-1">Weighted by effort</p>
                 </div>
               </div>
 
@@ -502,6 +586,12 @@ function App() {
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Gain to Pos 1
                       </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Expected Traffic
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Expected Gain
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
@@ -531,6 +621,14 @@ function App() {
                         <td className="px-6 py-4 whitespace-nowrap text-sm">
                           <span className={`font-medium ${keyword.gainPosition1 > 0 ? 'text-green-600' : 'text-red-600'}`}>
                             {keyword.gainPosition1 > 0 ? '+' : ''}{Math.round(keyword.gainPosition1)}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-purple-600">
+                          {Math.round(keyword.expectedTraffic)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          <span className={`font-medium ${keyword.expectedGain > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {keyword.expectedGain > 0 ? '+' : ''}{Math.round(keyword.expectedGain)}
                           </span>
                         </td>
                       </tr>
