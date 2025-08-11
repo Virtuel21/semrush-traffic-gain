@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { Upload, Download, RotateCcw, TrendingUp, Search, Target } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import CohortRulesEditor from './components/CohortRulesEditor';
 
 interface KeywordData {
   keyword: string;
@@ -50,7 +51,7 @@ function App() {
         const worksheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(worksheet);
 
-        const parsedKeywords: KeywordData[] = jsonData.map((row: any) => {
+        const parsedKeywords: KeywordData[] = jsonData.map((row: Record<string, unknown>) => {
           // Handle SEMrush and other common column naming conventions
           const keyword = row.Keyword || row.keyword || row.KEYWORD || row.query || row.Query || row['Query'] || '';
           const position = parseInt(row.Position || row.position || row.POSITION || row.rank || row.Rank || row['Avg. Position'] || '0');
@@ -246,15 +247,17 @@ function App() {
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-7xl mx-auto space-y-8">
         {/* Header */}
-        <div className="text-center">
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">SEMrush Keyword Analyzer</h1>
-          <p className="text-gray-600">Upload your keyword data and analyze traffic potential</p>
-        </div>
+          <div className="text-center">
+            <h1 className="text-4xl font-bold text-gray-900 mb-2">SEMrush Keyword Analyzer</h1>
+            <p className="text-gray-600">Upload your keyword data and analyze traffic potential</p>
+          </div>
 
-        {/* File Upload Section */}
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <h2 className="text-2xl font-semibold text-gray-900 mb-4 flex items-center">
-            <Upload className="mr-2" size={24} />
+          <CohortRulesEditor />
+
+          {/* File Upload Section */}
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <h2 className="text-2xl font-semibold text-gray-900 mb-4 flex items-center">
+              <Upload className="mr-2" size={24} />
             File Upload
           </h2>
           <div
